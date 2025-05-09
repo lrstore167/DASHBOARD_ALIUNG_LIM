@@ -892,6 +892,33 @@
         ::-webkit-scrollbar-thumb:hover {
             background: var(--primary);
         }
+
+        /* Loading Overlay */
+        #loadingOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: var(--accent);
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body class="no-select">
@@ -1405,6 +1432,11 @@
     <!-- Notification Container -->
     <div id="notificationContainer"></div>
 
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" style="display: none;">
+        <div class="spinner"></div>
+    </div>
+
     <!-- Modal for Edit Transaction -->
     <div class="modal fade" id="editTransactionModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog">
@@ -1473,13 +1505,11 @@
     <script>
         // Security measures
         document.addEventListener('keydown', function(e) {
-            // Disable F12
             if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I') || (e.ctrlKey && e.shiftKey && e.key === 'J') || (e.ctrlKey && e.key === 'U')) {
                 e.preventDefault();
                 showNotification('error', 'Akses Ditolak', 'Fitur ini dinonaktifkan untuk keamanan.');
             }
             
-            // Disable Ctrl+Shift+C
             if (e.ctrlKey && e.shiftKey && e.key === 'C') {
                 e.preventDefault();
                 showNotification('error', 'Akses Ditolak', 'Fitur ini dinonaktifkan untuk keamanan.');
@@ -1500,29 +1530,32 @@
                 const star = document.createElement('div');
                 star.classList.add('star');
                 
-                // Random size between 1px and 3px
                 const size = Math.random() * 2 + 1;
                 star.style.width = `${size}px`;
                 star.style.height = `${size}px`;
                 
-                // Random position
                 star.style.left = `${Math.random() * 100}%`;
                 star.style.top = `${Math.random() * 100}%`;
                 
-                // Random animation duration between 10s and 20s
                 const duration = Math.random() * 10 + 10;
                 star.style.animationDuration = `${duration}s`;
                 
-                // Random delay
                 star.style.animationDelay = `${Math.random() * 5}s`;
                 
                 loginContainer.appendChild(star);
             }
         }
 
-        // Format currency to IDR
+        // Format currency to IDR without decimal
         function formatCurrency(amount) {
-            return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(amount);
+            // Convert to number if it's a string
+            const num = typeof amount === 'string' ? parseFloat(amount.replace(/[^0-9.-]+/g,"")) : amount;
+            return 'Rp ' + Math.round(num).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        }
+
+        // Parse currency back to number
+        function parseCurrency(currencyString) {
+            return parseFloat(currencyString.replace(/[^0-9.-]+/g,""));
         }
 
         // Show notification
@@ -1562,12 +1595,10 @@
             
             notificationContainer.appendChild(notification);
             
-            // Show notification
             setTimeout(() => {
                 notification.classList.add('show');
             }, 10);
             
-            // Auto remove after 5 seconds
             setTimeout(() => {
                 notification.classList.remove('show');
                 setTimeout(() => {
@@ -1575,13 +1606,22 @@
                 }, 300);
             }, 5000);
             
-            // Close button
             notification.querySelector('.notification-close').addEventListener('click', () => {
                 notification.classList.remove('show');
                 setTimeout(() => {
                     notification.remove();
                 }, 300);
             });
+        }
+
+        // Show loading indicator
+        function showLoading() {
+            document.getElementById('loadingOverlay').style.display = 'flex';
+        }
+
+        // Hide loading indicator
+        function hideLoading() {
+            document.getElementById('loadingOverlay').style.display = 'none';
         }
 
         // Google Sheets API integration
@@ -1592,21 +1632,48 @@
         let debts = [];
         let receivables = [];
         let currentUser = null;
+        let reportChart = null;
+
+        // Check session on page load
+        function checkSession() {
+            const userSession = sessionStorage.getItem('financialDashboardUser');
+            if (userSession) {
+                try {
+                    currentUser = JSON.parse(userSession);
+                    document.getElementById('loginPage').style.display = 'none';
+                    document.getElementById('dashboard').style.display = 'block';
+                    document.getElementById('userName').textContent = currentUser.username;
+                    document.getElementById('userAvatar').textContent = currentUser.username.charAt(0).toUpperCase();
+                    loadDashboardData();
+                } catch (e) {
+                    console.error('Error parsing user session:', e);
+                    sessionStorage.removeItem('financialDashboardUser');
+                }
+            }
+        }
 
         // Login function
         async function login(username, password) {
+            if (!username || !password) {
+                showNotification('error', 'Error', 'Username dan password harus diisi.');
+                return;
+            }
+
+            showLoading();
+            
             try {
                 const response = await fetch(`${scriptURL}?action=login&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`);
                 const data = await response.json();
                 
                 if (data.success) {
                     currentUser = data.user;
+                    sessionStorage.setItem('financialDashboardUser', JSON.stringify(currentUser));
+                    
                     document.getElementById('loginPage').style.display = 'none';
                     document.getElementById('dashboard').style.display = 'block';
                     document.getElementById('userName').textContent = currentUser.username;
                     document.getElementById('userAvatar').textContent = currentUser.username.charAt(0).toUpperCase();
                     
-                    // Load initial data
                     loadDashboardData();
                     
                     showNotification('success', 'Login Berhasil', `Selamat datang, ${currentUser.username}!`);
@@ -1616,23 +1683,43 @@
             } catch (error) {
                 console.error('Error:', error);
                 showNotification('error', 'Error', 'Terjadi kesalahan saat login.');
+            } finally {
+                hideLoading();
             }
+        }
+
+        // Logout function
+        function logout() {
+            sessionStorage.removeItem('financialDashboardUser');
+            currentUser = null;
+            document.getElementById('loginPage').style.display = 'flex';
+            document.getElementById('dashboard').style.display = 'none';
+            document.getElementById('username').value = '';
+            document.getElementById('password').value = '';
+            showNotification('success', 'Logout Berhasil', 'Anda telah logout dari sistem.');
         }
 
         // Load dashboard data
         async function loadDashboardData() {
+            if (!currentUser) return;
+            
+            showLoading();
+            
             try {
                 // Load transactions
                 const transResponse = await fetch(`${scriptURL}?action=getTransactions&userId=${currentUser.id}`);
-                transactions = await transResponse.json();
+                const transData = await transResponse.json();
+                transactions = Array.isArray(transData) ? transData : [];
                 
                 // Load debts
                 const debtResponse = await fetch(`${scriptURL}?action=getDebts&userId=${currentUser.id}`);
-                debts = await debtResponse.json();
+                const debtData = await debtResponse.json();
+                debts = Array.isArray(debtData) ? debtData : [];
                 
                 // Load receivables
                 const recResponse = await fetch(`${scriptURL}?action=getReceivables&userId=${currentUser.id}`);
-                receivables = await recResponse.json();
+                const recData = await recResponse.json();
+                receivables = Array.isArray(recData) ? recData : [];
                 
                 // Update dashboard
                 updateDashboard();
@@ -1641,27 +1728,29 @@
             } catch (error) {
                 console.error('Error:', error);
                 showNotification('error', 'Error', 'Gagal memuat data dashboard.');
+            } finally {
+                hideLoading();
             }
         }
 
         // Update dashboard summary
         function updateDashboard() {
-            // Calculate totals
+            // Calculate totals with proper error handling
             const totalIncome = transactions
-                .filter(t => t.type === 'income')
-                .reduce((sum, t) => sum + parseFloat(t.amount), 0);
+                .filter(t => t && t.type === 'income')
+                .reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0);
                 
             const totalExpense = transactions
-                .filter(t => t.type === 'expense')
-                .reduce((sum, t) => sum + parseFloat(t.amount), 0);
+                .filter(t => t && t.type === 'expense')
+                .reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0);
                 
             const totalDebt = debts
-                .filter(d => d.status === 'Belum Lunas')
-                .reduce((sum, d) => sum + parseFloat(d.amount), 0);
+                .filter(d => d && d.status === 'Belum Lunas')
+                .reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
                 
             const totalReceivable = receivables
-                .filter(r => r.status === 'Belum Diterima')
-                .reduce((sum, r) => sum + parseFloat(r.amount), 0);
+                .filter(r => r && r.status === 'Belum Diterima')
+                .reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
                 
             const currentBalance = totalIncome - totalExpense;
             
@@ -1672,8 +1761,9 @@
             document.getElementById('totalReceivable').textContent = formatCurrency(totalReceivable);
             document.getElementById('currentBalance').textContent = formatCurrency(currentBalance);
             
-            // Update recent transactions
+            // Update recent transactions with proper error handling
             const recentTransactions = transactions
+                .filter(t => t && t.date)
                 .sort((a, b) => new Date(b.date) - new Date(a.date))
                 .slice(0, 5);
                 
@@ -1681,12 +1771,14 @@
             tbody.innerHTML = '';
             
             recentTransactions.forEach(t => {
+                if (!t) return;
+                
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td>${new Date(t.date).toLocaleDateString()}</td>
+                    <td>${t.date ? new Date(t.date).toLocaleDateString() : '-'}</td>
                     <td>${t.description || '-'}</td>
-                    <td>${t.category}</td>
-                    <td>${formatCurrency(t.amount)}</td>
+                    <td>${t.category || '-'}</td>
+                    <td>${formatCurrency(t.amount || 0)}</td>
                     <td><span class="badge ${t.type === 'income' ? 'badge-success' : 'badge-danger'}">${t.type === 'income' ? 'Pemasukan' : 'Pengeluaran'}</span></td>
                 `;
                 tbody.appendChild(row);
@@ -1695,7 +1787,7 @@
 
         // Update transactions table
         function updateTransactionsTable(filter = 'all', month = '') {
-            let filteredTransactions = [...transactions];
+            let filteredTransactions = [...transactions].filter(t => t);
             
             if (filter !== 'all') {
                 filteredTransactions = filteredTransactions.filter(t => t.type === filter);
@@ -1704,8 +1796,12 @@
             if (month) {
                 const [year, monthNum] = month.split('-');
                 filteredTransactions = filteredTransactions.filter(t => {
-                    const date = new Date(t.date);
-                    return date.getFullYear() == year && (date.getMonth() + 1) == monthNum;
+                    try {
+                        const date = new Date(t.date);
+                        return date.getFullYear() == year && (date.getMonth() + 1) == monthNum;
+                    } catch (e) {
+                        return false;
+                    }
                 });
             }
             
@@ -1715,10 +1811,10 @@
             filteredTransactions.forEach(t => {
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td>${new Date(t.date).toLocaleDateString()}</td>
+                    <td>${t.date ? new Date(t.date).toLocaleDateString() : '-'}</td>
                     <td>${t.description || '-'}</td>
-                    <td>${t.category}</td>
-                    <td>${formatCurrency(t.amount)}</td>
+                    <td>${t.category || '-'}</td>
+                    <td>${formatCurrency(t.amount || 0)}</td>
                     <td><span class="badge ${t.type === 'income' ? 'badge-success' : 'badge-danger'}">${t.type === 'income' ? 'Pemasukan' : 'Pengeluaran'}</span></td>
                     <td>
                         <button class="action-btn edit" data-id="${t.id}" data-type="transaction"><i class="fas fa-edit"></i></button>
@@ -1744,14 +1840,14 @@
             const debtTbody = document.querySelector('#debtTable tbody');
             debtTbody.innerHTML = '';
             
-            debts.forEach(d => {
+            debts.filter(d => d).forEach(d => {
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td>${new Date(d.date).toLocaleDateString()}</td>
-                    <td>${d.creditor}</td>
-                    <td>${formatCurrency(d.amount)}</td>
-                    <td>${new Date(d.dueDate).toLocaleDateString()}</td>
-                    <td><span class="badge ${d.status === 'Lunas' ? 'badge-success' : 'badge-warning'}">${d.status}</span></td>
+                    <td>${d.date ? new Date(d.date).toLocaleDateString() : '-'}</td>
+                    <td>${d.creditor || '-'}</td>
+                    <td>${formatCurrency(d.amount || 0)}</td>
+                    <td>${d.dueDate ? new Date(d.dueDate).toLocaleDateString() : '-'}</td>
+                    <td><span class="badge ${d.status === 'Lunas' ? 'badge-success' : 'badge-warning'}">${d.status || '-'}</span></td>
                     <td>
                         <button class="action-btn edit" data-id="${d.id}" data-type="debt"><i class="fas fa-edit"></i></button>
                         <button class="action-btn delete" data-id="${d.id}" data-type="debt"><i class="fas fa-trash"></i></button>
@@ -1764,14 +1860,14 @@
             const recTbody = document.querySelector('#receivableTable tbody');
             recTbody.innerHTML = '';
             
-            receivables.forEach(r => {
+            receivables.filter(r => r).forEach(r => {
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td>${new Date(r.date).toLocaleDateString()}</td>
-                    <td>${r.debtor}</td>
-                    <td>${formatCurrency(r.amount)}</td>
-                    <td>${new Date(r.dueDate).toLocaleDateString()}</td>
-                    <td><span class="badge ${r.status === 'Diterima' ? 'badge-success' : 'badge-primary'}">${r.status}</span></td>
+                    <td>${r.date ? new Date(r.date).toLocaleDateString() : '-'}</td>
+                    <td>${r.debtor || '-'}</td>
+                    <td>${formatCurrency(r.amount || 0)}</td>
+                    <td>${r.dueDate ? new Date(r.dueDate).toLocaleDateString() : '-'}</td>
+                    <td><span class="badge ${r.status === 'Diterima' ? 'badge-success' : 'badge-primary'}">${r.status || '-'}</span></td>
                     <td>
                         <button class="action-btn edit" data-id="${r.id}" data-type="receivable"><i class="fas fa-edit"></i></button>
                         <button class="action-btn delete" data-id="${r.id}" data-type="receivable"><i class="fas fa-trash"></i></button>
@@ -1792,14 +1888,24 @@
 
         // Add new transaction
         async function addTransaction(type, data) {
+            showLoading();
+            
             try {
+                // Clean data
+                const cleanedData = {
+                    amount: parseCurrency(data.amount),
+                    date: data.date,
+                    category: data.category,
+                    description: data.description || ''
+                };
+                
                 const response = await fetch(scriptURL, {
                     method: 'POST',
                     body: JSON.stringify({
                         action: 'addTransaction',
                         userId: currentUser.id,
                         type: type,
-                        data: data
+                        data: cleanedData
                     })
                 });
                 
@@ -1817,19 +1923,39 @@
                 console.error('Error:', error);
                 showNotification('error', 'Error', `Terjadi kesalahan saat menambahkan ${type === 'income' ? 'pemasukan' : 'pengeluaran'}.`);
                 return false;
+            } finally {
+                hideLoading();
             }
         }
 
         // Add new debt/receivable
         async function addDebt(type, data) {
+            showLoading();
+            
             try {
+                // Clean data
+                const cleanedData = {
+                    amount: parseCurrency(data.amount),
+                    date: data.date,
+                    dueDate: data.dueDate,
+                    status: data.status,
+                    description: data.description || ''
+                };
+                
+                // Add creditor/debtor based on type
+                if (type === 'debt') {
+                    cleanedData.creditor = data.creditor;
+                } else {
+                    cleanedData.debtor = data.debtor;
+                }
+                
                 const response = await fetch(scriptURL, {
                     method: 'POST',
                     body: JSON.stringify({
                         action: 'addDebt',
                         userId: currentUser.id,
                         type: type,
-                        data: data
+                        data: cleanedData
                     })
                 });
                 
@@ -1847,13 +1973,18 @@
                 console.error('Error:', error);
                 showNotification('error', 'Error', `Terjadi kesalahan saat menambahkan ${type === 'debt' ? 'utang' : 'piutang'}.`);
                 return false;
+            } finally {
+                hideLoading();
             }
         }
 
         // Edit transaction
         async function editTransaction(id) {
-            const transaction = transactions.find(t => t.id === id);
-            if (!transaction) return;
+            const transaction = transactions.find(t => t && t.id === id);
+            if (!transaction) {
+                showNotification('error', 'Error', 'Transaksi tidak ditemukan.');
+                return;
+            }
             
             const modalBody = document.getElementById('editTransactionModalBody');
             modalBody.innerHTML = `
@@ -1865,7 +1996,7 @@
                             <label for="editTransactionAmount">Jumlah</label>
                             <div class="currency-input">
                                 <span>Rp</span>
-                                <input type="text" class="form-control" id="editTransactionAmount" value="${transaction.amount}" required>
+                                <input type="text" class="form-control" id="editTransactionAmount" value="${formatCurrency(transaction.amount)}" required>
                             </div>
                         </div>
                         <div class="form-group">
@@ -1893,10 +2024,13 @@
         // Edit debt/receivable
         async function editDebt(id, type) {
             const item = type === 'debt' 
-                ? debts.find(d => d.id === id)
-                : receivables.find(r => r.id === id);
+                ? debts.find(d => d && d.id === id)
+                : receivables.find(r => r && r.id === id);
                 
-            if (!item) return;
+            if (!item) {
+                showNotification('error', 'Error', 'Data tidak ditemukan.');
+                return;
+            }
             
             const modalBody = document.getElementById('editDebtModalBody');
             modalBody.innerHTML = `
@@ -1908,7 +2042,7 @@
                             <label for="editDebtAmount">Jumlah</label>
                             <div class="currency-input">
                                 <span>Rp</span>
-                                <input type="text" class="form-control" id="editDebtAmount" value="${item.amount}" required>
+                                <input type="text" class="form-control" id="editDebtAmount" value="${formatCurrency(item.amount)}" required>
                             </div>
                         </div>
                         <div class="form-group">
@@ -1978,6 +2112,8 @@
 
         // Delete item
         async function deleteItem(id, type) {
+            showLoading();
+            
             try {
                 const response = await fetch(scriptURL, {
                     method: 'POST',
@@ -2001,6 +2137,8 @@
             } catch (error) {
                 console.error('Error:', error);
                 showNotification('error', 'Error', 'Terjadi kesalahan saat menghapus data.');
+            } finally {
+                hideLoading();
             }
         }
 
@@ -2029,8 +2167,12 @@
             
             // Filter transactions for the selected month
             const monthlyTransactions = transactions.filter(t => {
-                const date = new Date(t.date);
-                return date.getFullYear() == year && (date.getMonth() + 1) == monthNum;
+                try {
+                    const date = new Date(t.date);
+                    return date.getFullYear() == year && (date.getMonth() + 1) == monthNum;
+                } catch (e) {
+                    return false;
+                }
             });
             
             // Calculate income and expense by category
@@ -2039,9 +2181,9 @@
             
             monthlyTransactions.forEach(t => {
                 if (t.type === 'income') {
-                    incomeByCategory[t.category] = (incomeByCategory[t.category] || 0) + parseFloat(t.amount);
+                    incomeByCategory[t.category] = (incomeByCategory[t.category] || 0) + (parseFloat(t.amount) || 0);
                 } else {
-                    expenseByCategory[t.category] = (expenseByCategory[t.category] || 0) + parseFloat(t.amount);
+                    expenseByCategory[t.category] = (expenseByCategory[t.category] || 0) + (parseFloat(t.amount) || 0);
                 }
             });
             
@@ -2055,11 +2197,11 @@
             // Render chart
             const ctx = document.getElementById('reportChart').getContext('2d');
             
-            if (window.reportChart) {
-                window.reportChart.destroy();
+            if (reportChart) {
+                reportChart.destroy();
             }
             
-            window.reportChart = new Chart(ctx, {
+            reportChart = new Chart(ctx, {
                 type: 'bar',
                 data: {
                     labels: ['Pemasukan', 'Pengeluaran'],
@@ -2084,7 +2226,21 @@
                     responsive: true,
                     scales: {
                         y: {
-                            beginAtZero: true
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return 'Rp ' + value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return 'Rp ' + context.raw.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+                                }
+                            }
                         }
                     }
                 }
@@ -2093,8 +2249,8 @@
             // Update report details
             const reportDetails = document.getElementById('reportDetails');
             reportDetails.innerHTML = `
-                <div class="row">
-                    <div class="col-md-6">
+                <div style="display: flex; flex-wrap: wrap; gap: 1.5rem;">
+                    <div style="flex: 1; min-width: 300px;">
                         <h3>Pemasukan</h3>
                         <table class="table">
                             <thead>
@@ -2117,7 +2273,7 @@
                             </tbody>
                         </table>
                     </div>
-                    <div class="col-md-6">
+                    <div style="flex: 1; min-width: 300px;">
                         <h3>Pengeluaran</h3>
                         <table class="table">
                             <thead>
@@ -2141,12 +2297,10 @@
                         </table>
                     </div>
                 </div>
-                <div class="row">
-                    <div class="col-md-12">
-                        <div class="alert ${incomeData.reduce((a, b) => a + b, 0) >= expenseData.reduce((a, b) => a + b, 0) ? 'alert-success' : 'alert-danger'}" style="padding: 1rem; border-radius: 8px;">
-                            <h4>Saldo Bulan Ini: ${formatCurrency(incomeData.reduce((a, b) => a + b, 0) - expenseData.reduce((a, b) => a + b, 0))}</h4>
-                            <p>${incomeData.reduce((a, b) => a + b, 0) >= expenseData.reduce((a, b) => a + b, 0) ? 'Keuangan Anda sehat bulan ini!' : 'Anda mengalami defisit bulan ini.'}</p>
-                        </div>
+                <div style="margin-top: 1.5rem;">
+                    <div class="alert ${incomeData.reduce((a, b) => a + b, 0) >= expenseData.reduce((a, b) => a + b, 0) ? 'alert-success' : 'alert-danger'}" style="padding: 1rem; border-radius: 8px;">
+                        <h4>Saldo Bulan Ini: ${formatCurrency(incomeData.reduce((a, b) => a + b, 0) - expenseData.reduce((a, b) => a + b, 0))}</h4>
+                        <p>${incomeData.reduce((a, b) => a + b, 0) >= expenseData.reduce((a, b) => a + b, 0) ? 'Keuangan Anda sehat bulan ini!' : 'Anda mengalami defisit bulan ini.'}</p>
                     </div>
                 </div>
             `;
@@ -2154,6 +2308,8 @@
 
         // Export data
         async function exportData(type, startDate, endDate, format) {
+            showLoading();
+            
             try {
                 const response = await fetch(scriptURL, {
                     method: 'POST',
@@ -2199,6 +2355,8 @@
             } catch (error) {
                 console.error('Error:', error);
                 showNotification('error', 'Error', 'Terjadi kesalahan saat mengeksport data.');
+            } finally {
+                hideLoading();
             }
         }
 
@@ -2206,6 +2364,9 @@
         document.addEventListener('DOMContentLoaded', function() {
             // Create stars for login page
             createStars();
+            
+            // Check session
+            checkSession();
             
             // Set current date as default for forms
             const today = new Date().toISOString().split('T')[0];
@@ -2224,22 +2385,11 @@
                 const username = document.getElementById('username').value.trim();
                 const password = document.getElementById('password').value.trim();
                 
-                if (!username || !password) {
-                    showNotification('error', 'Error', 'Username dan password harus diisi.');
-                    return;
-                }
-                
                 login(username, password);
             });
             
             // Logout button event
-            document.getElementById('logoutBtn').addEventListener('click', function() {
-                currentUser = null;
-                document.getElementById('loginPage').style.display = 'flex';
-                document.getElementById('dashboard').style.display = 'none';
-                document.getElementById('username').value = '';
-                document.getElementById('password').value = '';
-            });
+            document.getElementById('logoutBtn').addEventListener('click', logout);
             
             // Menu item clicks
             document.querySelectorAll('.menu-item').forEach(item => {
@@ -2274,6 +2424,11 @@
                     // If debts page, update tables
                     if (page === 'debts-list') {
                         updateDebtsTables();
+                    }
+                    
+                    // If reports page, set default month
+                    if (page === 'reports') {
+                        document.getElementById('reportMonth').value = currentMonth;
                     }
                 });
             });
@@ -2314,7 +2469,7 @@
                 }
                 
                 const success = await addTransaction('income', {
-                    amount: amount.replace(/\D/g, ''),
+                    amount: amount,
                     date: date,
                     category: category,
                     description: description
@@ -2341,7 +2496,7 @@
                 }
                 
                 const success = await addTransaction('expense', {
-                    amount: amount.replace(/\D/g, ''),
+                    amount: amount,
                     date: date,
                     category: category,
                     description: description
@@ -2370,7 +2525,7 @@
                 }
                 
                 const success = await addDebt('debt', {
-                    amount: amount.replace(/\D/g, ''),
+                    amount: amount,
                     date: date,
                     dueDate: dueDate,
                     status: status,
@@ -2402,7 +2557,7 @@
                 }
                 
                 const success = await addDebt('receivable', {
-                    amount: amount.replace(/\D/g, ''),
+                    amount: amount,
                     date: date,
                     dueDate: dueDate,
                     status: status,
@@ -2486,6 +2641,8 @@
                     return;
                 }
                 
+                showLoading();
+                
                 try {
                     const response = await fetch(scriptURL, {
                         method: 'POST',
@@ -2495,7 +2652,7 @@
                             id: id,
                             type: type,
                             data: {
-                                amount: amount.replace(/\D/g, ''),
+                                amount: parseCurrency(amount),
                                 date: date,
                                 category: category,
                                 description: description
@@ -2515,6 +2672,8 @@
                 } catch (error) {
                     console.error('Error:', error);
                     showNotification('error', 'Error', 'Terjadi kesalahan saat memperbarui transaksi.');
+                } finally {
+                    hideLoading();
                 }
             });
             
@@ -2534,6 +2693,8 @@
                     return;
                 }
                 
+                showLoading();
+                
                 try {
                     const response = await fetch(scriptURL, {
                         method: 'POST',
@@ -2543,7 +2704,7 @@
                             id: id,
                             type: type,
                             data: {
-                                amount: amount.replace(/\D/g, ''),
+                                amount: parseCurrency(amount),
                                 date: date,
                                 dueDate: dueDate,
                                 status: status,
@@ -2565,20 +2726,29 @@
                 } catch (error) {
                     console.error('Error:', error);
                     showNotification('error', 'Error', `Terjadi kesalahan saat memperbarui ${type === 'debt' ? 'utang' : 'piutang'}.`);
+                } finally {
+                    hideLoading();
                 }
             });
             
             // Format currency inputs
             document.querySelectorAll('input[type="text"][id*="Amount"]').forEach(input => {
                 input.addEventListener('input', function() {
-                    let value = this.value.replace(/\D/g, '');
+                    let value = this.value.replace(/[^0-9]/g, '');
                     value = value ? parseInt(value, 10) : 0;
                     this.value = formatCurrency(value).replace('Rp', '').trim();
                 });
             });
             
-            // Initialize with dashboard page
-            document.getElementById('dashboardPage').style.display = 'block';
+            // Initialize with dashboard page if logged in
+            if (currentUser) {
+                document.getElementById('dashboardPage').style.display = 'block';
+            }
+        });
+
+        // Handle page refresh
+        window.addEventListener('beforeunload', function() {
+            // We're using sessionStorage so data will persist only for the session
         });
     </script>
 </body>
